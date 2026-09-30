@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#111111">
+<title>Shape Measure</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; color: #eee; font: 13px system-ui, sans-serif; }
+  [hidden] { display: none !important; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #back { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); background: #222c; color: #eee; text-decoration: none; font-size: 14px; padding: 4px 12px; border-radius: 14px; }
+  #cal { position: fixed; top: 8px; right: 8px; background: #222c; color: #aaa; text-decoration: none; font-size: 11px; padding: 4px 8px; border-radius: 12px; }
+  #panel { position: fixed; left: 50%; top: 44px; transform: translateX(-50%); color: #eee; font-size: 14px; text-align: center; pointer-events: none; background: #000b; padding: 6px 16px; border-radius: 14px; white-space: nowrap; }
+  #lab { color: #aaa; font-size: 12px; }
+  #read { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #sheet { position: fixed; left: 0; right: 0; bottom: 0; background: #222e; padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); display: grid; gap: 8px; border-radius: 16px 16px 0 0; }
+  .row { display: flex; gap: 6px; align-items: center; justify-content: center; flex-wrap: wrap; }
+  .fld { display: inline-flex; gap: 4px; align-items: center; }
+  .fld label { color: #aaa; min-width: 16px; text-align: right; }
+  button { background: #333; color: #eee; border: 0; border-radius: 8px; min-width: 34px; height: 34px; padding: 0 8px; font: inherit; font-size: 15px; }
+  button:disabled { opacity: .35; }
+  button.on { background: #e22; }
+  #tools button[data-t] { font-size: 13px; }
+  input { width: 56px; height: 34px; box-sizing: border-box; background: #111; color: #eee; border: 1px solid #444; border-radius: 8px; text-align: center; font: inherit; font-size: 15px; -webkit-user-select: text; user-select: text; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<a id="back" href="./">← Tools</a>
+<a id="cal" href="ruler.html" title="Calibrate ppi in the Ruler"></a>
+<div id="panel"><div id="lab"></div><div id="read"></div><div id="sub"></div></div>
+<div id="sheet">
+  <div class="row" id="tools">
+    <button data-t="circle">Circle</button><button data-t="ellipse">Ellipse</button><button data-t="square">Square</button><button data-t="rect">Rect</button>
+    <button id="undo" title="Swap back to the previous shape">↩</button><button id="del" title="Clear shape">✕</button>
+  </div>
+  <div class="row" id="sizes">
+    <span class="fld"><label id="l1"></label><button data-f="w" data-s="-1">−</button><input id="i1" type="number" inputmode="decimal" step="any"><button data-f="w" data-s="1">+</button></span>
+    <span class="fld" id="f2"><label>H</label><button data-f="h" data-s="-1">−</button><input id="i2" type="number" inputmode="decimal" step="any"><button data-f="h" data-s="1">+</button></span>
+  </div>
+  <div class="row">
+    <span class="row" id="nudge" style="flex-wrap:nowrap"><button data-mx="-1" title="Move left">◀</button><button data-my="-1" title="Move up">▲</button><button data-my="1" title="Move down">▼</button><button data-mx="1" title="Move right">▶</button></span>
+    <button id="unit" title="Switch mm / inches"></button><button id="bg" title="Light / dark background"></button>
+  </div>
+</div>
+<script src="ppi.js"></script>
+<script>
+// Canvas backing store == physical pixels, so only the panel's ppi matters (zoom-proof).
+// Shapes live in mm (position and size), so a ppi recalibration rescales them on screen.
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const $ = id => document.getElementById(id);
+
+// round: ellipse outline vs rectangle; lock: one size (circle / square) vs independent width and height.
+const TOOLS = {
+  circle:  { round: true,  lock: true,  per: 'Circumference', hint: 'Drag out from the center' },
+  ellipse: { round: true,  lock: false, per: 'Perimeter',     hint: 'Drag corner to corner' },
+  square:  { round: false, lock: true,  per: 'Perimeter',     hint: 'Drag out from the center' },
+  rect:    { round: false, lock: false, per: 'Perimeter',     hint: 'Drag corner to corner' },
+};
+const U = { mm: { k: 1, step: .1, dp: 1 }, in: { k: 25.4, step: .005, dp: 3 } };
+const MIN = .5, MAX = 1000; // mm
+
+let tool = 'circle', shape = null, prev = null; // shape: { t, cx, cy, w, h } in mm
+let unit = localStorage.getItem('shapeUnit') === 'in' ? 'in' : 'mm', dark = localStorage.getItem('shapeDark') === '1';
+try {
+  const s = JSON.parse(localStorage.getItem('shape'));
+  if (s && TOOLS[s.t] && ['cx', 'cy', 'w', 'h'].every(k => Number.isFinite(s[k]))) { shape = s; tool = s.t; }
+} catch (e) {}
+
+const clamp = v => Math.min(MAX, Math.max(MIN, v));
+const pmm = () => ppi / 25.4;
+const handles = s => [[s.cx + s.w / 2, s.cy, 'x'], [s.cx - s.w / 2, s.cy, 'x'], [s.cx, s.cy + s.h / 2, 'y'], [s.cx, s.cy - s.h / 2, 'y']];
+const inside = (s, x, y, tol) => TOOLS[s.t].round
+  ? ((x - s.cx) / (s.w / 2 + tol)) ** 2 + ((y - s.cy) / (s.h / 2 + tol)) ** 2 <= 1
+  : Math.abs(x - s.cx) <= s.w / 2 + tol && Math.abs(y - s.cy) <= s.h / 2 + tol;
+// Ellipse perimeter: Ramanujan's second approximation (well under 0.001% off for phone-sized shapes).
+const perimeter = s => {
+  if (!TOOLS[s.t].round) return 2 * (s.w + s.h);
+  const a = s.w / 2, b = s.h / 2, h = ((a - b) / (a + b)) ** 2;
+  return Math.PI * (a + b) * (1 + 3 * h / (10 + Math.sqrt(4 - 3 * h)));
+};
+const area = s => TOOLS[s.t].round ? Math.PI * s.w * s.h / 4 : s.w * s.h;
+
+const num = mm => (mm / U[unit].k).toFixed(U[unit].dp);
+const len = mm => num(mm) + ' ' + unit;
+const sq = mm2 => (mm2 / U[unit].k ** 2).toFixed(U[unit].dp) + ' ' + unit + '²';
+
+let W = 0, H = 0, saveTimer;
+function resize() {
+  const r = cv.getBoundingClientRect();
+  W = cv.width = Math.round(r.width * devicePixelRatio); H = cv.height = Math.round(r.height * devicePixelRatio);
+  draw();
+}
+const save = () => {
+  if (shape) localStorage.setItem('shape', JSON.stringify(shape)); else localStorage.removeItem('shape');
+  localStorage.setItem('shapeUnit', unit); localStorage.setItem('shapeDark', dark ? '1' : '0');
+};
+const change = () => { draw(); clearTimeout(saveTimer); saveTimer = setTimeout(save, 300); };
+
+function draw() {
+  const pm = pmm(), t = TOOLS[tool];
+  ctx.fillStyle = dark ? '#111' : '#f4e9c8'; ctx.fillRect(0, 0, W, H);
+  if (shape) {
+    const x = shape.cx * pm, y = shape.cy * pm, rx = shape.w / 2 * pm, ry = shape.h / 2 * pm;
+    ctx.beginPath();
+    if (t.round) ctx.ellipse(x, y, rx, ry, 0, 0, 7); else ctx.rect(x - rx, y - ry, 2 * rx, 2 * ry);
+    ctx.fillStyle = 'rgba(220,40,40,.08)'; ctx.fill(); // faint, so the object under the shape stays visible
+    ctx.strokeStyle = ctx.fillStyle = '#e22'; ctx.lineWidth = Math.max(2, devicePixelRatio); ctx.stroke();
+    const c = pm * 1.5; // center cross
+    ctx.beginPath(); ctx.moveTo(x - c, y); ctx.lineTo(x + c, y); ctx.moveTo(x, y - c); ctx.lineTo(x, y + c); ctx.stroke();
+    for (const [hx, hy] of handles(shape)) { ctx.beginPath(); ctx.arc(hx * pm, hy * pm, pm * 1.2, 0, 7); ctx.fill(); }
+  }
+
+  // readout
+  if (shape) {
+    const dims = t.lock ? (t.round ? 'Ø ' + len(shape.w) : len(shape.w) + ' square') : `${num(shape.w)} × ${len(shape.h)}`;
+    $('lab').textContent = t.per;
+    $('read').textContent = len(perimeter(shape));
+    $('sub').textContent = `${dims} · Area ${sq(area(shape))}`;
+  } else {
+    $('lab').textContent = '';
+    $('read').textContent = 'Draw a shape';
+    $('sub').textContent = t.hint;
+  }
+  // controls
+  for (const b of document.querySelectorAll('[data-t]')) b.classList.toggle('on', b.dataset.t === tool);
+  $('undo').disabled = !prev; $('del').disabled = !shape;
+  $('sizes').hidden = $('nudge').hidden = !shape;
+  $('l1').textContent = !t.lock ? 'W' : t.round ? 'Ø' : 'Side';
+  $('f2').hidden = t.lock;
+  if (shape) for (const [i, k] of [['i1', 'w'], ['i2', 'h']]) if (document.activeElement !== $(i)) $(i).value = num(shape[k]);
+  $('unit').textContent = unit; $('bg').textContent = dark ? '☀' : '☾';
+  $('cal').textContent = `${ppi.toFixed(1)} ppi · calibrate ›`;
+}
+
+// --- editing ---
+function setSize(k, mm) {
+  shape[k] = clamp(mm);
+  if (TOOLS[tool].lock) shape.w = shape.h = shape[k];
+  change();
+}
+function setTool(t) {
+  tool = t;
+  if (shape) { shape.t = t; if (TOOLS[t].lock) shape.h = shape.w; }
+  change();
+}
+const stepMm = (mult = 1) => U[unit].step * U[unit].k * mult;
+
+// Press-and-hold repeats, speeding up after a moment (0.1 mm steps are slow for big changes).
+function hold(el, fn) {
+  let timer, n = 0;
+  const stop = () => { clearTimeout(timer); n = 0; };
+  const tick = () => { fn(n > 15 ? 10 : 1); n++; timer = setTimeout(tick, n === 1 ? 400 : 70); };
+  el.addEventListener('pointerdown', e => { e.preventDefault(); stop(); tick(); });
+  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) el.addEventListener(ev, stop);
+}
+for (const b of document.querySelectorAll('[data-f]')) hold(b, mult => {
+  const { k, step } = U[unit], f = b.dataset.f;
+  setSize(f, Math.round((shape[f] / k + b.dataset.s * step * mult) / step) * step * k); // snap to the step grid
+});
+for (const b of document.querySelectorAll('[data-mx],[data-my]')) hold(b, mult => {
+  shape.cx += (b.dataset.mx || 0) * stepMm(mult); shape.cy += (b.dataset.my || 0) * stepMm(mult); change();
+});
+for (const [id, f] of [['i1', 'w'], ['i2', 'h']]) {
+  $(id).addEventListener('change', () => { const v = parseFloat($(id).value); if (v > 0) setSize(f, v * U[unit].k); $(id).value = num(shape[f]); });
+  $(id).addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
+}
+for (const b of document.querySelectorAll('[data-t]')) b.onclick = () => setTool(b.dataset.t);
+$('undo').onclick = () => { [shape, prev] = [prev, shape]; if (shape) tool = shape.t; change(); };
+$('del').onclick = () => { prev = shape; shape = null; change(); };
+$('unit').onclick = () => { unit = unit === 'mm' ? 'in' : 'mm'; change(); };
+$('bg').onclick = () => { dark = !dark; change(); };
+$('sheet').addEventListener('contextmenu', e => { if (e.target.closest('button')) e.preventDefault(); });
+
+// --- canvas gestures: grab a handle to resize, grab the shape to move it, drag on empty space to draw a new one ---
+let drag = null;
+const pt = e => { const r = cv.getBoundingClientRect(), k = cv.width / r.width / pmm(); return [(e.clientX - r.left) * k, (e.clientY - r.top) * k]; };
+cv.addEventListener('pointerdown', e => {
+  if (drag) return;
+  const [x, y] = pt(e);
+  cv.setPointerCapture(e.pointerId);
+  drag = { id: e.pointerId, m: 'draw', x0: x, y0: y, made: false };
+  if (!shape) return;
+  let best = Math.min(4.5, Math.max(1.5, Math.min(shape.w, shape.h) / 3)); // handle grab radius (mm), shrinks for tiny shapes
+  for (const [hx, hy, ax] of handles(shape)) {
+    const d = Math.hypot(hx - x, hy - y);
+    if (d < best) { best = d; drag = { id: e.pointerId, m: 'size', ax, off: ax === 'x' ? hx - x : hy - y }; }
+  }
+  if (drag.m === 'draw' && inside(shape, x, y, 2)) drag = { id: e.pointerId, m: 'move', dx: shape.cx - x, dy: shape.cy - y };
+});
+cv.addEventListener('pointermove', e => {
+  if (!drag || e.pointerId !== drag.id) return;
+  const [x, y] = pt(e), t = TOOLS[tool];
+  if (drag.m === 'move') { shape.cx = x + drag.dx; shape.cy = y + drag.dy; }
+  else if (drag.m === 'size') {
+    const half = Math.abs((drag.ax === 'x' ? x : y) + drag.off - (drag.ax === 'x' ? shape.cx : shape.cy)); // symmetric about the center
+    setSize(drag.ax === 'x' ? 'w' : 'h', half * 2); return;
+  } else {
+    const dx = x - drag.x0, dy = y - drag.y0;
+    if (!drag.made) { if (Math.hypot(dx, dy) < 2) return; prev = shape; shape = { t: tool }; drag.made = true; } // a stray tap won't replace your shape
+    if (t.lock) {
+      const s = clamp(2 * (t.round ? Math.hypot(dx, dy) : Math.max(Math.abs(dx), Math.abs(dy))));
+      Object.assign(shape, { cx: drag.x0, cy: drag.y0, w: s, h: s });
+    } else Object.assign(shape, { cx: drag.x0 + dx / 2, cy: drag.y0 + dy / 2, w: clamp(Math.abs(dx)), h: clamp(Math.abs(dy)) });
+  }
+  change();
+});
+for (const ev of ['pointerup', 'pointercancel']) cv.addEventListener(ev, e => { if (drag && e.pointerId === drag.id) drag = null; });
+
+addEventListener('resize', resize);
+addEventListener('pagehide', save);
+resize();
+(async () => {
+  if (saved) { ppi = saved; label = 'Manual'; } else ({ ppi, label } = await detect());
+  draw();
+})();
+</script>
+</body>
+</html>
