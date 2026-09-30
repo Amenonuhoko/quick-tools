@@ -4,22 +4,46 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="theme-color" content="#111111">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');</script>
 <title>Ruler</title>
 <style>
   html, body { margin: 0; height: 100%; background: #111; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
   canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  button { background: #333; color: #eee; border: 0; border-radius: 50%; width: 32px; height: 32px; font-size: 18px; }
+  button.on { background: #e22; }
   #panel { position: fixed; left: 50%; top: 44px; transform: translateX(-50%); color: #eee; font: 14px system-ui, sans-serif; text-align: center; pointer-events: none; background: #000b; padding: 6px 16px; border-radius: 14px; white-space: nowrap; }
   #read { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  #cal { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; color: #aaa; font: 13px system-ui, sans-serif; background: #222; padding: 6px 10px; border-radius: 20px; white-space: nowrap; }
-  #cal button { background: #333; color: #eee; border: 0; border-radius: 50%; width: 32px; height: 32px; font-size: 18px; }
+  #bar { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; background: #222; padding: 6px 10px; border-radius: 20px; }
   #back { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); background: #222c; color: #eee; text-decoration: none; font: 14px system-ui, sans-serif; padding: 4px 12px; border-radius: 14px; }
+  #menu { position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%); width: min(92vw, 360px); box-sizing: border-box; background: #222; color: #eee; font: 14px system-ui, sans-serif; padding: 14px; border-radius: 16px; z-index: 5; }
+  #menu[hidden] { display: none; }
+  #menu .row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  #menu .row b { flex: 1; }
+  #menu .wide { width: auto; border-radius: 16px; padding: 6px 12px; font-size: 14px; }
+  #menu .hint { color: #999; font-size: 12px; margin: -4px 0 10px; }
+  #k { flex: 1; text-align: center; color: #aaa; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <a id="back" href="./">← Tools</a>
 <div id="panel"><div id="read"></div><div id="sub"></div></div>
-<div id="cal"><button id="ax" title="Measure across / down">↕</button><button id="nm" title="Number every notch" style="font-size:12px">123</button><button id="m">−</button><span id="k"></span><button id="p">+</button></div>
+<div id="bar">
+  <button id="ax" title="Measure across / down · ruler length">↕</button>
+  <button id="nm" title="Number every notch" style="font-size:12px">123</button>
+  <button id="mn" title="Mini ruler you can drag and twist">▬</button>
+  <button id="gear" title="Settings">⚙</button>
+</div>
+<div id="menu" hidden>
+  <div class="row"><b>Units</b><span id="units"><button class="wide" data-u="metric">Metric</button> <button class="wide" data-u="imperial">Imperial</button> <button class="wide" data-u="both">Both</button></span></div>
+  <div class="row"><b>Screen calibration</b><button id="auto" class="wide">Auto</button></div>
+  <div class="row"><button id="m">−</button><span id="k"></span><button id="p">+</button></div>
+  <div class="hint">Auto uses your phone model. To fine-tune, hold a credit card (85.6 mm long side) against the screen and nudge until the ticks match.</div>
+  <div class="row" style="margin:0"><b></b><button id="close" class="wide">Done</button></div>
+</div>
 <script src="ppi.js"></script>
 <script>
 // Canvas backing store == physical pixels, so only the panel's ppi matters (zoom-proof).
@@ -27,94 +51,172 @@
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 const $ = id => document.getElementById(id);
 
-// Two draggable edges (in mm along the measuring axis). Put an object on the screen, drag each edge to its sides.
-let horiz = false, nums = localStorage.getItem('nums') === '1', edges = [25, 65];
-const drags = new Map(); // pointerId -> { i: edge index, off: px offset from finger to edge }
+const F = (px, w = '') => `${w}${px}px system-ui, sans-serif`;
+const frac = n => { const w = Math.floor(n / 16), r = n % 16, g = r ? (function f(a, b) { return b ? f(b, a % b) : a; })(r, 16) : 1;
+  return r ? (w ? w + ' ' : '') + r / g + '/' + 16 / g : String(w); };
+// u runs along the ruler, v across it. h = u maps to x (horizontal), else u maps to y (full-screen vertical).
+const P = h => (u, v) => h ? [u, v] : [v, u];
+const seg = (h, u, v1, v2) => { const pos = P(h); ctx.beginPath(); ctx.moveTo(...pos(u, v1)); ctx.lineTo(...pos(u, v2)); ctx.stroke(); };
 
+let units = localStorage.getItem('units') || 'metric'; // metric | imperial | both
+let mini = false, horiz = false, nums = localStorage.getItem('nums') === '1', edges = [25, 65];
+const RW = 26, LENS = { metric: [50, 75, 100, 150], imperial: [50.8, 76.2, 101.6, 152.4] };
+const m = { x: null, y: null, a: Math.PI / 2, len: 75 };
+const lens = () => units === 'imperial' ? LENS.imperial : LENS.metric;
+const nearest = () => lens().reduce((b, v, i) => Math.abs(v - m.len) < Math.abs(lens()[b] - m.len) ? i : b, 0);
+
+const MM = pmm => ({ step: pmm, major: 10, len: i => i % 10 === 0 ? 8 : i % 5 === 0 ? 5.5 : 3.5, lab: i => i / 10, num: i => i, px: Math.round(pmm * .9) });
+const IN = () => ({ step: ppi / 16, major: 16, len: i => i % 16 === 0 ? 8 : i % 8 === 0 ? 6.5 : i % 4 === 0 ? 5 : i % 2 === 0 ? 3.5 : 2.2, lab: i => i / 16, num: frac, px: Math.round(ppi / 16 * .72) });
+
+// One scale (mm or 1/16") along the low side (left/top) or high side (right/bottom).
+// Number mode labels every notch in a fixed column (rotated on a horizontal ruler so they fit).
+function scale(L, C, h, pmm, low, s) {
+  const pos = P(h), o = low ? 0 : C, dir = low ? 1 : -1;
+  ctx.textAlign = nums ? (h || low ? 'left' : 'right') : h ? 'center' : low ? 'left' : 'right';
+  ctx.textBaseline = nums || !h ? 'middle' : low ? 'top' : 'bottom';
+  for (let i = 0, u; (u = i * s.step) <= L + 1; i++) {
+    seg(h, u, o, o + dir * s.len(i) * pmm);
+    if (!i) continue;
+    if (nums) {
+      ctx.font = F(s.px, i % s.major ? '' : '700 ');
+      ctx.save(); ctx.translate(...pos(u, o + dir * 9 * pmm));
+      if (h) ctx.rotate(low ? Math.PI / 2 : -Math.PI / 2);
+      ctx.fillText(s.num(i), 0, 0); ctx.restore();
+    } else if (i % s.major === 0) {
+      ctx.font = F(Math.round(pmm * 3));
+      ctx.fillText(s.lab(i), ...pos(u, o + dir * (s.len(i) + 1) * pmm));
+    }
+  }
+}
+function ticks(L, C, h, pmm) {
+  ctx.strokeStyle = ctx.fillStyle = '#222'; ctx.lineWidth = Math.max(1, Math.round(pmm * 0.12));
+  const list = units === 'both' ? [MM(pmm), IN()] : units === 'metric' ? [MM(pmm)] : [IN()];
+  list.forEach((s, k) => scale(L, C, h, pmm, k === 0, s));
+}
+
+// Two modes. Full: whole screen is the ruler with two draggable measuring edges (put an object on the screen,
+// drag each edge to its sides). Mini: a small ruler strip you drag with one finger and twist with two.
 function draw() {
   const dpr = devicePixelRatio;
   const W = cv.width = Math.round(innerWidth * dpr), H = cv.height = Math.round(innerHeight * dpr);
-  const pmm = ppi / 25.4, L = horiz ? W : H, C = horiz ? H : W; // L along the measuring axis, C across
-  const pos = (u, v) => horiz ? [u, v] : [v, u];
-  const line = (u, v1, v2) => { ctx.beginPath(); ctx.moveTo(...pos(u, v1)); ctx.lineTo(...pos(u, v2)); ctx.stroke(); };
-  ctx.fillStyle = '#f4e9c8'; ctx.fillRect(0, 0, W, H);
-  ctx.strokeStyle = ctx.fillStyle = '#222'; ctx.font = `${Math.round(pmm * 3)}px system-ui, sans-serif`;
-  ctx.lineWidth = Math.max(1, Math.round(pmm * 0.12));
-
-  // Notches. Number mode labels every mm and every 1/16" in a fixed column (rotated in horizontal mode).
-  const F = (px, w = '') => `${w}${px}px system-ui, sans-serif`;
-  const text = (s, u, v, low) => {
-    ctx.save(); ctx.translate(...pos(u, v));
-    if (horiz) ctx.rotate(low ? Math.PI / 2 : -Math.PI / 2);
-    ctx.fillText(s, 0, 0); ctx.restore();
-  };
-  const frac = n => { const w = Math.floor(n / 16), r = n % 16, g = r ? (function f(a, b) { return b ? f(b, a % b) : a; })(r, 16) : 1;
-    return r ? (w ? w + ' ' : '') + r / g + '/' + 16 / g : String(w); };
-
-  // mm/cm on the low side (left or top)
-  ctx.textAlign = nums || !horiz ? 'left' : 'center'; ctx.textBaseline = nums || !horiz ? 'middle' : 'top';
-  for (let i = 0, u; (u = i * pmm) < L; i++) {
-    const len = i % 10 === 0 ? 8 : i % 5 === 0 ? 5.5 : 3.5;
-    line(u, 0, len * pmm);
-    if (nums) { if (i) { ctx.font = F(Math.round(pmm * .9), i % 10 ? '' : '700 '); text(i, u, 9 * pmm, true); } }
-    else if (i % 10 === 0 && i) ctx.fillText(i / 10, ...pos(u, (len + 1) * pmm));
+  const pmm = ppi / 25.4, imp = units === 'imperial';
+  if (mini) {
+    if (m.x === null) { m.x = W / 2; m.y = H / 2; }
+    ctx.fillStyle = '#1b1b1b'; ctx.fillRect(0, 0, W, H);
+    const Lr = m.len * pmm, Cr = RW * pmm;
+    ctx.save(); ctx.translate(m.x, m.y); ctx.rotate(m.a); ctx.translate(-Lr / 2, -Cr / 2);
+    ctx.fillStyle = '#f4e9c8'; ctx.fillRect(0, 0, Lr, Cr);
+    ctx.fillStyle = 'rgba(0,0,0,.07)'; ctx.fillRect(0, 0, Lr * .18, Cr); ctx.fillRect(Lr * .82, 0, Lr * .18, Cr); // twist zones
+    ticks(Lr, Cr, true, pmm);
+    ctx.restore();
+    $('read').textContent = (((m.a * 180 / Math.PI) % 180 + 180) % 180).toFixed(1) + '°';
+    $('sub').textContent = imp ? `${Math.round(m.len / 25.4)} in ruler` : `${m.len} mm ruler`;
+  } else {
+    const L = horiz ? W : H, C = horiz ? H : W, pos = P(horiz);
+    ctx.fillStyle = '#f4e9c8'; ctx.fillRect(0, 0, W, H);
+    ticks(L, C, horiz, pmm);
+    // measuring edges + shaded gap between them
+    const [a, b] = edges.map(e => e * pmm);
+    ctx.fillStyle = 'rgba(220,40,40,.18)';
+    const p1 = pos(Math.min(a, b), 0), p2 = pos(Math.max(a, b), C);
+    ctx.fillRect(p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);
+    ctx.strokeStyle = ctx.fillStyle = '#e22'; ctx.lineWidth = Math.max(2, dpr);
+    for (const u of [a, b]) {
+      seg(horiz, u, 0, C);
+      ctx.beginPath(); ctx.arc(...pos(u, C / 2), pmm * 3, 0, 7); ctx.fill(); // grab knob
+    }
+    const d = Math.abs(edges[1] - edges[0]), inch = d / 25.4;
+    if (imp) { $('read').textContent = inch.toFixed(3) + ' in'; $('sub').textContent = frac(Math.round(inch * 16)) + ' in (nearest 1/16)'; }
+    else if (units === 'metric') { $('read').textContent = d.toFixed(1) + ' mm'; $('sub').textContent = (d / 10).toFixed(2) + ' cm'; }
+    else { $('read').textContent = d.toFixed(1) + ' mm'; $('sub').textContent = inch.toFixed(3) + ' in'; }
   }
-  // inches (1/16) on the high side (right or bottom)
-  ctx.textAlign = nums ? (horiz ? 'left' : 'right') : horiz ? 'center' : 'right'; ctx.textBaseline = nums || !horiz ? 'middle' : 'bottom';
-  for (let i = 0, u; (u = i * ppi / 16) < L; i++) {
-    const len = i % 16 === 0 ? 8 : i % 8 === 0 ? 6.5 : i % 4 === 0 ? 5 : i % 2 === 0 ? 3.5 : 2.2;
-    line(u, C, C - len * pmm);
-    if (nums) { if (i) { ctx.font = F(Math.round(ppi / 16 * .72), i % 16 ? '' : '700 '); text(frac(i), u, C - 9 * pmm, false); } }
-    else if (i % 16 === 0 && i) ctx.fillText(i / 16, ...pos(u, C - (len + 1) * pmm));
-  }
-
-  // measuring edges + shaded gap between them
-  const [a, b] = edges.map(e => e * pmm);
-  ctx.fillStyle = 'rgba(220,40,40,.18)';
-  const p1 = pos(Math.min(a, b), 0), p2 = pos(Math.max(a, b), C);
-  ctx.fillRect(p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);
-  ctx.strokeStyle = ctx.fillStyle = '#e22'; ctx.lineWidth = Math.max(2, dpr);
-  for (const u of [a, b]) {
-    line(u, 0, C);
-    ctx.beginPath(); ctx.arc(...pos(u, C / 2), pmm * 3, 0, 7); ctx.fill(); // grab knob
-  }
-
-  const d = Math.abs(edges[1] - edges[0]);
-  $('read').textContent = d.toFixed(1) + ' mm';
-  $('sub').textContent = (d / 25.4).toFixed(3) + ' in';
   $('k').textContent = `${label} · ${ppi.toFixed(1)} ppi`;
-  $('ax').textContent = horiz ? '↔' : '↕';
-  $('panel').style.top = horiz ? '110px' : '44px';
-  $('nm').style.background = nums ? '#e22' : '';
+  $('ax').textContent = mini ? (imp ? Math.round(m.len / 25.4) + '″' : m.len) : horiz ? '↔' : '↕';
+  $('ax').style.fontSize = mini ? '12px' : '';
+  $('panel').style.top = horiz && !mini ? '110px' : '44px';
+  $('nm').classList.toggle('on', nums);
+  $('mn').classList.toggle('on', mini);
+  for (const b of document.querySelectorAll('#units button')) b.classList.toggle('on', b.dataset.u === units);
 }
 
-// Dragging: grab the nearest free edge from anywhere; it keeps its offset from the finger so you can steer it
-// from beside the object without covering the edge. Two fingers can move both edges at once.
+// Full mode dragging: grab the nearest free edge from anywhere; it keeps its offset from the finger so you can steer
+// it from beside the object without covering the edge. Two fingers can move both edges at once.
 const along = e => (horiz ? e.clientX : e.clientY) * devicePixelRatio;
 const limit = () => (horiz ? cv.width : cv.height) / (ppi / 25.4);
+const drags = new Map(); // pointerId -> { i: edge index, off: px offset from finger to edge }
+// Mini mode: 1 finger drags (or twists if it starts on an end zone), 2 fingers move + rotate about their midpoint.
+const pts = new Map(); let snap = null;
+const dp = e => ({ x: e.clientX * devicePixelRatio, y: e.clientY * devicePixelRatio });
+function resnap() {
+  if (!pts.size) { snap = null; return; }
+  const ps = [...pts.entries()].map(([id, p]) => ({ id, ...p }));
+  let rot = false;
+  if (ps.length === 1) { // finger in an end zone twists about the centre
+    const dx = ps[0].x - m.x, dy = ps[0].y - m.y, pmm = ppi / 25.4, Lr = m.len * pmm;
+    const lx = dx * Math.cos(m.a) + dy * Math.sin(m.a), ly = -dx * Math.sin(m.a) + dy * Math.cos(m.a);
+    rot = Math.abs(ly) < (RW / 2 + 4) * pmm && Math.abs(lx) > .32 * Lr && Math.abs(lx) < .5 * Lr + 4 * pmm;
+  }
+  snap = { ps, x: m.x, y: m.y, a: m.a, rot };
+}
+function moveMini() {
+  if (!snap) return;
+  const cur = snap.ps.map(s => pts.get(s.id)).filter(Boolean);
+  if (cur.length !== snap.ps.length) return;
+  if (cur.length === 1) {
+    const [s] = snap.ps, [p] = cur;
+    if (snap.rot) m.a = snap.a + Math.atan2(p.y - snap.y, p.x - snap.x) - Math.atan2(s.y - snap.y, s.x - snap.x);
+    else { m.x = snap.x + p.x - s.x; m.y = snap.y + p.y - s.y; }
+  } else {
+    const [s1, s2] = snap.ps, [p1, p2] = cur;
+    const d = Math.atan2(p2.y - p1.y, p2.x - p1.x) - Math.atan2(s2.y - s1.y, s2.x - s1.x);
+    const m0 = { x: (s1.x + s2.x) / 2, y: (s1.y + s2.y) / 2 }, m1 = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    const vx = snap.x - m0.x, vy = snap.y - m0.y;
+    m.a = snap.a + d;
+    m.x = m1.x + vx * Math.cos(d) - vy * Math.sin(d); m.y = m1.y + vx * Math.sin(d) + vy * Math.cos(d);
+  }
+  m.x = Math.min(cv.width, Math.max(0, m.x)); m.y = Math.min(cv.height, Math.max(0, m.y));
+  draw();
+}
+
+const capture = e => { try { cv.setPointerCapture(e.pointerId); } catch (err) {} };
 cv.addEventListener('pointerdown', e => {
+  if (!$('menu').hidden) { $('menu').hidden = true; return; } // tap outside closes settings
+  capture(e);
+  if (mini) { if (pts.size >= 2) return; pts.set(e.pointerId, dp(e)); resnap(); return; }
   const t = along(e), pmm = ppi / 25.4, taken = [...drags.values()].map(d => d.i);
   const i = [0, 1].filter(i => !taken.includes(i)).sort((x, y) => Math.abs(edges[x] * pmm - t) - Math.abs(edges[y] * pmm - t))[0];
   if (i === undefined) return;
-  cv.setPointerCapture(e.pointerId);
   drags.set(e.pointerId, { i, off: edges[i] * pmm - t });
 });
 cv.addEventListener('pointermove', e => {
+  if (mini) { if (pts.has(e.pointerId)) { pts.set(e.pointerId, dp(e)); moveMini(); } return; }
   const d = drags.get(e.pointerId); if (!d) return;
   edges[d.i] = Math.min(limit(), Math.max(0, (along(e) + d.off) / (ppi / 25.4)));
   draw();
 });
-for (const ev of ['pointerup', 'pointercancel']) cv.addEventListener(ev, e => drags.delete(e.pointerId));
+for (const ev of ['pointerup', 'pointercancel']) cv.addEventListener(ev, e => { drags.delete(e.pointerId); if (pts.delete(e.pointerId)) resnap(); });
 
-$('ax').onclick = () => { horiz = !horiz; edges = edges.map(e => Math.min(e, limit() - 3)); draw(); };
+$('ax').onclick = () => {
+  if (mini) m.len = lens()[(nearest() + 1) % lens().length];
+  else { horiz = !horiz; edges = edges.map(e => Math.min(e, limit() - 3)); }
+  draw();
+};
+$('mn').onclick = () => { mini = !mini; pts.clear(); drags.clear(); snap = null; draw(); };
 $('nm').onclick = () => { nums = !nums; localStorage.setItem('nums', nums ? '1' : '0'); draw(); };
 
-// Calibrate: hold a real ruler / card (85.6 mm tall edge) up to the screen and nudge until it lines up.
+// Settings (hidden menu): units + screen calibration.
+$('gear').onclick = () => { $('menu').hidden = !$('menu').hidden; };
+$('close').onclick = () => { $('menu').hidden = true; };
+for (const b of document.querySelectorAll('#units button')) b.onclick = () => {
+  units = b.dataset.u; localStorage.setItem('units', units); m.len = lens()[nearest()]; draw();
+};
+// Calibration: Auto uses the phone model; − / + nudges the ppi (match a credit card against the ticks).
 function nudge(d) { ppi = Math.round((ppi + d) * 10) / 10; label = 'Manual'; localStorage.setItem('ppi', ppi); draw(); }
 $('m').onclick = () => nudge(-0.5);
 $('p').onclick = () => nudge(0.5);
-$('k').onclick = async () => { localStorage.removeItem('ppi'); ({ ppi, label } = await detect()); draw(); }; // tap label = back to auto
+$('auto').onclick = async () => { localStorage.removeItem('ppi'); ({ ppi, label } = await detect()); draw(); };
 addEventListener('resize', draw);
+m.len = lens()[nearest()];
 draw();
 (async () => { if (saved) { ppi = saved; label = 'Manual'; } else ({ ppi, label } = await detect()); draw(); })();
 </script>
