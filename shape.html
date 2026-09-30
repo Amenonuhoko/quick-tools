@@ -16,8 +16,23 @@
   #read { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
   #sheet { position: fixed; left: 0; right: 0; bottom: 0; background: #222e; padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); display: grid; gap: 8px; border-radius: 16px 16px 0 0; }
   .row { display: flex; gap: 6px; align-items: center; justify-content: center; flex-wrap: wrap; }
-  .fld { display: inline-flex; gap: 4px; align-items: center; }
-  .fld label { color: #aaa; min-width: 16px; text-align: right; }
+  #topl { position: fixed; top: 8px; left: 8px; display: flex; gap: 6px; }
+  #topl button { min-width: 0; height: 26px; padding: 0 10px; border-radius: 13px; background: #222c; font-size: 12px; }
+  #ctl { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; justify-items: center; }
+  #mid { display: grid; gap: 8px; }
+  .fld { display: flex; gap: 6px; align-items: center; }
+  .fld label { color: #aaa; min-width: 24px; text-align: right; }
+  .fld input { min-width: 0; flex: 1; }
+  /* Joysticks: push the knob away from the center to move / resize; it springs back when released. */
+  .stick { --p: min(112px, 28vw); width: var(--p); display: grid; justify-items: center; gap: 4px; color: #888; font-size: 11px; letter-spacing: .08em; }
+  .pad { position: relative; width: var(--p); height: var(--p); border-radius: 50%; background: #111; box-shadow: inset 0 0 0 2px #3a3a3a; touch-action: none; }
+  .pad.lever { width: calc(var(--p) * .52); margin: 0 auto; border-radius: var(--p); }
+  .pad.lever::before { content: ''; position: absolute; left: 50%; top: 22%; bottom: 22%; width: 4px; margin-left: -2px; border-radius: 2px; background: #333; }
+  .pad i { position: absolute; color: #666; font: 11px system-ui, sans-serif; font-style: normal; pointer-events: none; }
+  .pad .u { top: 5px; left: 0; right: 0; text-align: center; } .pad .d { bottom: 5px; left: 0; right: 0; text-align: center; }
+  .pad .l { left: 7px; top: 50%; margin-top: -7px; } .pad .r { right: 7px; top: 50%; margin-top: -7px; }
+  .pad b { position: absolute; left: 50%; top: 50%; width: calc(var(--p) * .42); height: calc(var(--p) * .42); margin: calc(var(--p) * -.21) 0 0 calc(var(--p) * -.21); border-radius: 50%; background: radial-gradient(circle at 35% 30%, #f66, #e22 60%, #a11); box-shadow: 0 3px 8px #000a; pointer-events: none; }
+  .pad:not(.held) b { transition: transform .15s ease-out; }
   button { background: #333; color: #eee; border: 0; border-radius: 8px; min-width: 34px; height: 34px; padding: 0 8px; font: inherit; font-size: 15px; }
   button:disabled { opacity: .35; }
   button.on { background: #e22; }
@@ -27,6 +42,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
+<div id="topl"><button id="unit" title="Switch mm / inches"></button><button id="bg" title="Light / dark background"></button></div>
 <a id="back" href="./">← Tools</a>
 <a id="cal" href="ruler.html" title="Calibrate ppi in the Ruler"></a>
 <div id="panel"><div id="lab"></div><div id="read"></div><div id="sub"></div></div>
@@ -35,13 +51,13 @@
     <button data-t="circle">Circle</button><button data-t="ellipse">Ellipse</button><button data-t="square">Square</button><button data-t="rect">Rect</button>
     <button id="undo" title="Swap back to the previous shape">↩</button><button id="del" title="Clear shape">✕</button>
   </div>
-  <div class="row" id="sizes">
-    <span class="fld"><label id="l1"></label><button data-f="w" data-s="-1">−</button><input id="i1" type="number" inputmode="decimal" step="any"><button data-f="w" data-s="1">+</button></span>
-    <span class="fld" id="f2"><label>H</label><button data-f="h" data-s="-1">−</button><input id="i2" type="number" inputmode="decimal" step="any"><button data-f="h" data-s="1">+</button></span>
-  </div>
-  <div class="row">
-    <span class="row" id="nudge" style="flex-wrap:nowrap"><button data-mx="-1" title="Move left">◀</button><button data-my="-1" title="Move up">▲</button><button data-my="1" title="Move down">▼</button><button data-mx="1" title="Move right">▶</button></span>
-    <button id="unit" title="Switch mm / inches"></button><button id="bg" title="Light / dark background"></button>
+  <div id="ctl">
+    <div class="stick"><div class="pad" id="padS"><i class="u"></i><i class="d"></i><i class="l">W−</i><i class="r">W+</i><b></b></div>SIZE</div>
+    <div id="mid">
+      <span class="fld"><label id="l1"></label><input id="i1" type="number" inputmode="decimal" step="any"></span>
+      <span class="fld" id="f2"><label>H</label><input id="i2" type="number" inputmode="decimal" step="any"></span>
+    </div>
+    <div class="stick"><div class="pad" id="padM"><i class="u">▲</i><i class="d">▼</i><i class="l">◀</i><i class="r">▶</i><b></b></div>MOVE</div>
   </div>
 </div>
 <script src="ppi.js"></script>
@@ -58,7 +74,7 @@ const TOOLS = {
   square:  { round: false, lock: true,  per: 'Perimeter',     hint: 'Drag out from the center' },
   rect:    { round: false, lock: false, per: 'Perimeter',     hint: 'Drag corner to corner' },
 };
-const U = { mm: { k: 1, step: .1, dp: 1 }, in: { k: 25.4, step: .005, dp: 3 } };
+const U = { mm: { k: 1, dp: 1 }, in: { k: 25.4, dp: 3 } };
 const MIN = .5, MAX = 1000; // mm
 
 let tool = 'circle', shape = null, prev = null; // shape: { t, cx, cy, w, h } in mm
@@ -126,7 +142,11 @@ function draw() {
   // controls
   for (const b of document.querySelectorAll('[data-t]')) b.classList.toggle('on', b.dataset.t === tool);
   $('undo').disabled = !prev; $('del').disabled = !shape;
-  $('sizes').hidden = $('nudge').hidden = !shape;
+  $('ctl').hidden = !shape;
+  // Circle / Square: one size, so the size pad becomes a vertical lever. Ellipse / Rect: a 2-axis pad (left-right = W, up-down = H).
+  $('padS').classList.toggle('lever', t.lock);
+  for (const el of $('padS').querySelectorAll('.l,.r')) el.hidden = t.lock;
+  $('padS').querySelector('.u').textContent = t.lock ? '+' : 'H+'; $('padS').querySelector('.d').textContent = t.lock ? '−' : 'H−';
   $('l1').textContent = !t.lock ? 'W' : t.round ? 'Ø' : 'Side';
   $('f2').hidden = t.lock;
   if (shape) for (const [i, k] of [['i1', 'w'], ['i2', 'h']]) if (document.activeElement !== $(i)) $(i).value = num(shape[k]);
@@ -145,23 +165,46 @@ function setTool(t) {
   if (shape) { shape.t = t; if (TOOLS[t].lock) shape.h = shape.w; }
   change();
 }
-const stepMm = (mult = 1) => U[unit].step * U[unit].k * mult;
-
-// Press-and-hold repeats, speeding up after a moment (0.1 mm steps are slow for big changes).
-function hold(el, fn) {
-  let timer, n = 0;
-  const stop = () => { clearTimeout(timer); n = 0; };
-  const tick = () => { fn(n > 15 ? 10 : 1); n++; timer = setTimeout(tick, n === 1 ? 400 : 70); };
-  el.addEventListener('pointerdown', e => { e.preventDefault(); stop(); tick(); });
-  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) el.addEventListener(ev, stop);
+// --- joysticks: how far you push sets the speed (squared, so small pushes are fine); letting go springs back and stops ---
+const SIZE_SPEED = 30, MOVE_SPEED = 40; // mm/s at full deflection
+const stick = { S: [0, 0], M: [0, 0] }, held = new Set();
+const ease = v => Math.sign(v) * Math.max(0, (Math.abs(v) - .08) / .92) ** 2; // small dead zone, then quadratic
+let last = 0;
+function tick(now) {
+  if (!held.size) return;
+  const dt = Math.min(.05, (now - last) / 1000); last = now;
+  const [sx, sy] = stick.S.map(ease), [mx, my] = stick.M.map(ease);
+  if (shape && (sx || sy || mx || my)) {
+    shape.cx = Math.min(W / pmm(), Math.max(0, shape.cx + mx * MOVE_SPEED * dt));
+    shape.cy = Math.min(H / pmm(), Math.max(0, shape.cy + my * MOVE_SPEED * dt));
+    if (TOOLS[tool].lock) shape.w = shape.h = clamp(shape.w - sy * SIZE_SPEED * dt); // up = bigger
+    else { shape.w = clamp(shape.w + sx * SIZE_SPEED * dt); shape.h = clamp(shape.h - sy * SIZE_SPEED * dt); }
+    change();
+  }
+  requestAnimationFrame(tick);
 }
-for (const b of document.querySelectorAll('[data-f]')) hold(b, mult => {
-  const { k, step } = U[unit], f = b.dataset.f;
-  setSize(f, Math.round((shape[f] / k + b.dataset.s * step * mult) / step) * step * k); // snap to the step grid
-});
-for (const b of document.querySelectorAll('[data-mx],[data-my]')) hold(b, mult => {
-  shape.cx += (b.dataset.mx || 0) * stepMm(mult); shape.cy += (b.dataset.my || 0) * stepMm(mult); change();
-});
+function joystick(pad, vec) {
+  const knob = pad.querySelector('b'); let id = null, ox = 0, oy = 0, R = 1;
+  const push = e => {
+    let dx = pad.classList.contains('lever') ? 0 : e.clientX - ox, dy = e.clientY - oy;
+    const d = Math.hypot(dx, dy); if (d > R) { dx *= R / d; dy *= R / d; }
+    knob.style.transform = `translate(${dx}px,${dy}px)`; vec[0] = dx / R; vec[1] = dy / R;
+  };
+  const release = () => {
+    if (id === null) return;
+    id = null; held.delete(pad); pad.classList.remove('held'); knob.style.transform = ''; vec[0] = vec[1] = 0;
+  };
+  pad.addEventListener('pointerdown', e => {
+    if (id !== null) return;
+    id = e.pointerId; pad.setPointerCapture(id); pad.classList.add('held');
+    ox = e.clientX; oy = e.clientY; R = (pad.clientHeight - knob.offsetHeight) / 2; // grab anywhere; the knob moves relative to where you touched
+    if (!held.size) { last = performance.now(); requestAnimationFrame(tick); }
+    held.add(pad);
+  });
+  pad.addEventListener('pointermove', e => { if (e.pointerId === id) push(e); });
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) pad.addEventListener(ev, release);
+}
+joystick($('padS'), stick.S); joystick($('padM'), stick.M);
 for (const [id, f] of [['i1', 'w'], ['i2', 'h']]) {
   $(id).addEventListener('change', () => { const v = parseFloat($(id).value); if (v > 0) setSize(f, v * U[unit].k); $(id).value = num(shape[f]); });
   $(id).addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
@@ -171,7 +214,7 @@ $('undo').onclick = () => { [shape, prev] = [prev, shape]; if (shape) tool = sha
 $('del').onclick = () => { prev = shape; shape = null; change(); };
 $('unit').onclick = () => { unit = unit === 'mm' ? 'in' : 'mm'; change(); };
 $('bg').onclick = () => { dark = !dark; change(); };
-$('sheet').addEventListener('contextmenu', e => { if (e.target.closest('button')) e.preventDefault(); });
+$('sheet').addEventListener('contextmenu', e => { if (e.target.closest('button,.pad')) e.preventDefault(); });
 
 // --- canvas gestures: grab a handle to resize, grab the shape to move it, drag on empty space to draw a new one ---
 let drag = null;
