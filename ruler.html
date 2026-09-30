@@ -8,17 +8,18 @@
 <style>
   html, body { margin: 0; height: 100%; background: #111; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
   canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
-  #panel { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); color: #eee; font: 14px system-ui, sans-serif; text-align: center; pointer-events: none; }
-  #read { font-size: 28px; font-weight: 600; }
-  #cal { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; color: #aaa; font: 13px system-ui, sans-serif; background: #222; padding: 6px 10px; border-radius: 20px; }
+  #panel { position: fixed; left: 50%; top: 44px; transform: translateX(-50%); color: #eee; font: 14px system-ui, sans-serif; text-align: center; pointer-events: none; background: #000b; padding: 6px 16px; border-radius: 14px; white-space: nowrap; }
+  #read { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #cal { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; color: #aaa; font: 13px system-ui, sans-serif; background: #222; padding: 6px 10px; border-radius: 20px; white-space: nowrap; }
   #cal button { background: #333; color: #eee; border: 0; border-radius: 50%; width: 32px; height: 32px; font-size: 18px; }
+  #back { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); background: #222c; color: #eee; text-decoration: none; font: 14px system-ui, sans-serif; padding: 4px 12px; border-radius: 14px; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<a href="./" style="position:fixed;top:8px;left:50%;transform:translateX(-50%);background:#222c;color:#eee;text-decoration:none;font:14px system-ui,sans-serif;padding:4px 12px;border-radius:14px">← Tools</a>
-<div id="panel"><div id="read">Touch to measure</div><div id="sub"></div></div>
-<div id="cal"><button id="m">−</button><span id="k"></span><button id="p">+</button></div>
+<a id="back" href="./">← Tools</a>
+<div id="panel"><div id="read"></div><div id="sub"></div></div>
+<div id="cal"><button id="ax" title="Measure across / down">↕</button><button id="nm" title="Number every notch" style="font-size:12px">123</button><button id="m">−</button><span id="k"></span><button id="p">+</button></div>
 <script>
 // Canvas backing store == physical pixels, so only the panel's ppi matters (zoom-proof).
 // Browsers can't report physical size, so we look the model up in a table of panel ppi.
@@ -32,7 +33,7 @@ const PPI_BY_MODEL = {
 const PPI_BY_PREFIX = { // Samsung model codes (SM-S921B etc.)
   'sm-s921': 416, 'sm-s926': 513, 'sm-s928': 505, // S24 / S24+ / S24 Ultra
 };
-let ppi = 422, label = 'Pixel 9 default', touchY = null;
+let ppi = 422, label = 'Pixel 9 default';
 const saved = +localStorage.getItem('ppi');
 
 async function detect() {
@@ -46,48 +47,91 @@ async function detect() {
   // Unknown phone: Android CSS density is ~160 dpi per 1.0 dpr, close enough to start from.
   return { ppi: Math.round(devicePixelRatio * 160), label: (model || 'Unknown device') + ' (estimated)' };
 }
+
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 const $ = id => document.getElementById(id);
+
+// Two draggable edges (in mm along the measuring axis). Put an object on the screen, drag each edge to its sides.
+let horiz = false, nums = localStorage.getItem('nums') === '1', edges = [25, 65];
+const drags = new Map(); // pointerId -> { i: edge index, off: px offset from finger to edge }
 
 function draw() {
   const dpr = devicePixelRatio;
   const W = cv.width = Math.round(innerWidth * dpr), H = cv.height = Math.round(innerHeight * dpr);
-  const pmm = ppi / 25.4, pin = ppi;
+  const pmm = ppi / 25.4, L = horiz ? W : H, C = horiz ? H : W; // L along the measuring axis, C across
+  const pos = (u, v) => horiz ? [u, v] : [v, u];
+  const line = (u, v1, v2) => { ctx.beginPath(); ctx.moveTo(...pos(u, v1)); ctx.lineTo(...pos(u, v2)); ctx.stroke(); };
   ctx.fillStyle = '#f4e9c8'; ctx.fillRect(0, 0, W, H);
   ctx.strokeStyle = ctx.fillStyle = '#222'; ctx.font = `${Math.round(pmm * 3)}px system-ui, sans-serif`;
-  ctx.textBaseline = 'middle'; ctx.lineWidth = Math.max(1, Math.round(pmm * 0.12));
+  ctx.lineWidth = Math.max(1, Math.round(pmm * 0.12));
 
-  // mm/cm along left edge
-  ctx.textAlign = 'left';
-  for (let i = 0, y; (y = i * pmm) < H; i++) {
+  // Notches. Number mode labels every mm and every 1/16" in a fixed column (rotated in horizontal mode).
+  const F = (px, w = '') => `${w}${px}px system-ui, sans-serif`;
+  const text = (s, u, v, low) => {
+    ctx.save(); ctx.translate(...pos(u, v));
+    if (horiz) ctx.rotate(low ? Math.PI / 2 : -Math.PI / 2);
+    ctx.fillText(s, 0, 0); ctx.restore();
+  };
+  const frac = n => { const w = Math.floor(n / 16), r = n % 16, g = r ? (function f(a, b) { return b ? f(b, a % b) : a; })(r, 16) : 1;
+    return r ? (w ? w + ' ' : '') + r / g + '/' + 16 / g : String(w); };
+
+  // mm/cm on the low side (left or top)
+  ctx.textAlign = nums || !horiz ? 'left' : 'center'; ctx.textBaseline = nums || !horiz ? 'middle' : 'top';
+  for (let i = 0, u; (u = i * pmm) < L; i++) {
     const len = i % 10 === 0 ? 8 : i % 5 === 0 ? 5.5 : 3.5;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(len * pmm, y); ctx.stroke();
-    if (i % 10 === 0 && i) ctx.fillText(i / 10, (len + 1) * pmm, y);
+    line(u, 0, len * pmm);
+    if (nums) { if (i) { ctx.font = F(Math.round(pmm * .9), i % 10 ? '' : '700 '); text(i, u, 9 * pmm, true); } }
+    else if (i % 10 === 0 && i) ctx.fillText(i / 10, ...pos(u, (len + 1) * pmm));
   }
-  // inches (1/16) along right edge
-  ctx.textAlign = 'right';
-  for (let i = 0, y; (y = i * pin / 16) < H; i++) {
+  // inches (1/16) on the high side (right or bottom)
+  ctx.textAlign = nums ? (horiz ? 'left' : 'right') : horiz ? 'center' : 'right'; ctx.textBaseline = nums || !horiz ? 'middle' : 'bottom';
+  for (let i = 0, u; (u = i * ppi / 16) < L; i++) {
     const len = i % 16 === 0 ? 8 : i % 8 === 0 ? 6.5 : i % 4 === 0 ? 5 : i % 2 === 0 ? 3.5 : 2.2;
-    ctx.beginPath(); ctx.moveTo(W, y); ctx.lineTo(W - len * pmm, y); ctx.stroke();
-    if (i % 16 === 0 && i) ctx.fillText(i / 16, W - (len + 1) * pmm, y);
+    line(u, C, C - len * pmm);
+    if (nums) { if (i) { ctx.font = F(Math.round(ppi / 16 * .72), i % 16 ? '' : '700 '); text(frac(i), u, C - 9 * pmm, false); } }
+    else if (i % 16 === 0 && i) ctx.fillText(i / 16, ...pos(u, C - (len + 1) * pmm));
   }
-  if (touchY !== null) {
-    ctx.strokeStyle = '#e33'; ctx.lineWidth = Math.max(2, dpr);
-    ctx.beginPath(); ctx.moveTo(0, touchY); ctx.lineTo(W, touchY); ctx.stroke();
+
+  // measuring edges + shaded gap between them
+  const [a, b] = edges.map(e => e * pmm);
+  ctx.fillStyle = 'rgba(220,40,40,.18)';
+  const p1 = pos(Math.min(a, b), 0), p2 = pos(Math.max(a, b), C);
+  ctx.fillRect(p1[0], p1[1], p2[0] - p1[0], p2[1] - p1[1]);
+  ctx.strokeStyle = ctx.fillStyle = '#e22'; ctx.lineWidth = Math.max(2, dpr);
+  for (const u of [a, b]) {
+    line(u, 0, C);
+    ctx.beginPath(); ctx.arc(...pos(u, C / 2), pmm * 3, 0, 7); ctx.fill(); // grab knob
   }
+
+  const d = Math.abs(edges[1] - edges[0]);
+  $('read').textContent = d.toFixed(1) + ' mm';
+  $('sub').textContent = (d / 25.4).toFixed(3) + ' in';
   $('k').textContent = `${label} · ${ppi.toFixed(1)} ppi`;
+  $('ax').textContent = horiz ? '↔' : '↕';
+  $('panel').style.top = horiz ? '110px' : '44px';
+  $('nm').style.background = nums ? '#e22' : '';
 }
 
-function measure(e) {
-  const t = e.touches ? e.touches[0] : e;
-  touchY = t.clientY * devicePixelRatio;
-  const mm = touchY / (ppi / 25.4);
-  $('read').textContent = mm.toFixed(1) + ' mm';
-  $('sub').textContent = (mm / 25.4).toFixed(3) + ' in';
+// Dragging: grab the nearest free edge from anywhere; it keeps its offset from the finger so you can steer it
+// from beside the object without covering the edge. Two fingers can move both edges at once.
+const along = e => (horiz ? e.clientX : e.clientY) * devicePixelRatio;
+const limit = () => (horiz ? cv.width : cv.height) / (ppi / 25.4);
+cv.addEventListener('pointerdown', e => {
+  const t = along(e), pmm = ppi / 25.4, taken = [...drags.values()].map(d => d.i);
+  const i = [0, 1].filter(i => !taken.includes(i)).sort((x, y) => Math.abs(edges[x] * pmm - t) - Math.abs(edges[y] * pmm - t))[0];
+  if (i === undefined) return;
+  cv.setPointerCapture(e.pointerId);
+  drags.set(e.pointerId, { i, off: edges[i] * pmm - t });
+});
+cv.addEventListener('pointermove', e => {
+  const d = drags.get(e.pointerId); if (!d) return;
+  edges[d.i] = Math.min(limit(), Math.max(0, (along(e) + d.off) / (ppi / 25.4)));
   draw();
-}
-cv.addEventListener('pointerdown', measure);
-cv.addEventListener('pointermove', e => e.buttons || e.pointerType === 'touch' ? measure(e) : 0);
+});
+for (const ev of ['pointerup', 'pointercancel']) cv.addEventListener(ev, e => drags.delete(e.pointerId));
+
+$('ax').onclick = () => { horiz = !horiz; edges = edges.map(e => Math.min(e, limit() - 3)); draw(); };
+$('nm').onclick = () => { nums = !nums; localStorage.setItem('nums', nums ? '1' : '0'); draw(); };
 
 // Calibrate: hold a real ruler / card (85.6 mm tall edge) up to the screen and nudge until it lines up.
 function nudge(d) { ppi = Math.round((ppi + d) * 10) / 10; label = 'Manual'; localStorage.setItem('ppi', ppi); draw(); }
