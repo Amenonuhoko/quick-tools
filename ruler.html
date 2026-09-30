@@ -29,6 +29,7 @@
 <div id="panel"><div id="read"></div><div id="sub"></div></div>
 <div id="bar">
   <button id="ax" title="Measure across / down · ruler length">↕</button>
+  <button id="ms" title="Measure between two draggable edges" style="font-size:14px">|·|</button>
   <button id="nm" title="Number every notch" style="font-size:12px">123</button>
   <button id="mn" title="Mini ruler you can drag and twist">▬</button>
   <button id="gear" title="Settings">⚙</button>
@@ -79,7 +80,7 @@ const P = h => (u, v) => h ? [u, v] : [v, u];
 const seg = (h, u, v1, v2) => { const pos = P(h); ctx.beginPath(); ctx.moveTo(...pos(u, v1)); ctx.lineTo(...pos(u, v2)); ctx.stroke(); };
 
 let units = localStorage.getItem('units') || 'metric'; // metric | imperial | both
-let mini = false, horiz = false, nums = localStorage.getItem('nums') === '1', edges = [25, 65];
+let mini = false, horiz = false, nums = false, measure = false, edges = [25, 65]; // both off on load: first screen is a plain ruler
 const RW = 26, LENS = { metric: [50, 75, 100, 150], imperial: [50.8, 76.2, 101.6, 152.4] };
 const m = { x: null, y: null, a: Math.PI / 2, len: 75 };
 const lens = () => units === 'imperial' ? LENS.imperial : LENS.metric;
@@ -135,6 +136,7 @@ function draw() {
     const L = horiz ? W : H, C = horiz ? H : W, pos = P(horiz);
     ctx.fillStyle = '#f4e9c8'; ctx.fillRect(0, 0, W, H);
     ticks(L, C, horiz, pmm);
+    if (measure) {
     // measuring edges + shaded gap between them
     const [a, b] = edges.map(e => e * pmm);
     ctx.fillStyle = 'rgba(220,40,40,.18)';
@@ -149,7 +151,10 @@ function draw() {
     if (imp) { $('read').textContent = inch.toFixed(3) + ' in'; $('sub').textContent = frac(Math.round(inch * 16)) + ' in (nearest 1/16)'; }
     else if (units === 'metric') { $('read').textContent = d.toFixed(1) + ' mm'; $('sub').textContent = (d / 10).toFixed(2) + ' cm'; }
     else { $('read').textContent = d.toFixed(1) + ' mm'; $('sub').textContent = inch.toFixed(3) + ' in'; }
+    }
   }
+  $('panel').style.display = mini || measure ? '' : 'none';
+  $('ms').classList.toggle('on', measure);
   $('k').textContent = `${label} · ${ppi.toFixed(1)} ppi`;
   $('ax').textContent = mini ? (imp ? Math.round(m.len / 25.4) + '″' : m.len) : horiz ? '↔' : '↕';
   $('ax').style.fontSize = mini ? '12px' : '';
@@ -203,6 +208,7 @@ cv.addEventListener('pointerdown', e => {
   if (!$('menu').hidden) { $('menu').hidden = true; return; } // tap outside closes settings
   capture(e);
   if (mini) { if (pts.size >= 2) return; pts.set(e.pointerId, dp(e)); resnap(); return; }
+  if (!measure) return;
   const t = along(e), pmm = ppi / 25.4, taken = [...drags.values()].map(d => d.i);
   const i = [0, 1].filter(i => !taken.includes(i)).sort((x, y) => Math.abs(edges[x] * pmm - t) - Math.abs(edges[y] * pmm - t))[0];
   if (i === undefined) return;
@@ -222,7 +228,8 @@ $('ax').onclick = () => {
   draw();
 };
 $('mn').onclick = () => { mini = !mini; pts.clear(); drags.clear(); snap = null; draw(); };
-$('nm').onclick = () => { nums = !nums; localStorage.setItem('nums', nums ? '1' : '0'); draw(); };
+$('nm').onclick = () => { nums = !nums; draw(); };
+$('ms').onclick = () => { measure = !measure; drags.clear(); draw(); };
 
 // Settings (hidden menu): units + screen calibration.
 $('gear').onclick = () => { $('menu').hidden = !$('menu').hidden; };
