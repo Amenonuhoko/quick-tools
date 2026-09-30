@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#111111">
+<title>Ruler</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #panel { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); color: #eee; font: 14px system-ui, sans-serif; text-align: center; pointer-events: none; }
+  #read { font-size: 28px; font-weight: 600; }
+  #cal { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 8px; align-items: center; color: #aaa; font: 13px system-ui, sans-serif; background: #222; padding: 6px 10px; border-radius: 20px; }
+  #cal button { background: #333; color: #eee; border: 0; border-radius: 50%; width: 32px; height: 32px; font-size: 18px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel"><div id="read">Touch to measure</div><div id="sub"></div></div>
+<div id="cal"><button id="m">−</button><span id="k"></span><button id="p">+</button></div>
+<script>
+// Pixel 9 panel: 422 ppi. Canvas backing store == physical pixels, so this is zoom-proof.
+const DEFAULT_PPI = 422;
+let ppi = +localStorage.getItem('ppi') || DEFAULT_PPI;
+let touchY = null;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const $ = id => document.getElementById(id);
+
+function draw() {
+  const dpr = devicePixelRatio;
+  const W = cv.width = Math.round(innerWidth * dpr), H = cv.height = Math.round(innerHeight * dpr);
+  const pmm = ppi / 25.4, pin = ppi;
+  ctx.fillStyle = '#f4e9c8'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = ctx.fillStyle = '#222'; ctx.font = `${Math.round(pmm * 3)}px system-ui, sans-serif`;
+  ctx.textBaseline = 'middle'; ctx.lineWidth = Math.max(1, Math.round(pmm * 0.12));
+
+  // mm/cm along left edge
+  ctx.textAlign = 'left';
+  for (let i = 0, y; (y = i * pmm) < H; i++) {
+    const len = i % 10 === 0 ? 8 : i % 5 === 0 ? 5.5 : 3.5;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(len * pmm, y); ctx.stroke();
+    if (i % 10 === 0 && i) ctx.fillText(i / 10, (len + 1) * pmm, y);
+  }
+  // inches (1/16) along right edge
+  ctx.textAlign = 'right';
+  for (let i = 0, y; (y = i * pin / 16) < H; i++) {
+    const len = i % 16 === 0 ? 8 : i % 8 === 0 ? 6.5 : i % 4 === 0 ? 5 : i % 2 === 0 ? 3.5 : 2.2;
+    ctx.beginPath(); ctx.moveTo(W, y); ctx.lineTo(W - len * pmm, y); ctx.stroke();
+    if (i % 16 === 0 && i) ctx.fillText(i / 16, W - (len + 1) * pmm, y);
+  }
+  if (touchY !== null) {
+    ctx.strokeStyle = '#e33'; ctx.lineWidth = Math.max(2, dpr);
+    ctx.beginPath(); ctx.moveTo(0, touchY); ctx.lineTo(W, touchY); ctx.stroke();
+  }
+  $('k').textContent = `cal ${ppi.toFixed(1)} ppi`;
+}
+
+function measure(e) {
+  const t = e.touches ? e.touches[0] : e;
+  touchY = t.clientY * devicePixelRatio;
+  const mm = touchY / (ppi / 25.4);
+  $('read').textContent = mm.toFixed(1) + ' mm';
+  $('sub').textContent = (mm / 25.4).toFixed(3) + ' in';
+  draw();
+}
+cv.addEventListener('pointerdown', measure);
+cv.addEventListener('pointermove', e => e.buttons || e.pointerType === 'touch' ? measure(e) : 0);
+
+// Calibrate: hold a real ruler / card (85.6 mm tall edge) up to the screen and nudge until it lines up.
+function nudge(d) { ppi = Math.round((ppi + d) * 10) / 10; localStorage.setItem('ppi', ppi); draw(); }
+$('m').onclick = () => nudge(-0.5);
+$('p').onclick = () => nudge(0.5);
+addEventListener('resize', draw);
+draw();
+</script>
+</body>
+</html>
