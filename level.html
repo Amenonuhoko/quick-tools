@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#111111">
+<title>Level</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #eee; font: 14px system-ui, sans-serif; overflow: hidden; user-select: none; -webkit-user-select: none; touch-action: manipulation; }
+  #back { position: fixed; top: 12px; left: 12px; color: #aaa; text-decoration: none; font-size: 22px; padding: 4px 10px; }
+  #hold { position: fixed; top: 16px; right: 16px; color: #fc3; font-weight: 600; }
+  svg { position: fixed; left: 0; right: 0; top: 8vh; width: 100%; height: 56vh; }
+  #out { position: fixed; left: 0; right: 0; top: 66vh; text-align: center; }
+  #big { font-size: 56px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #sub { color: #aaa; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  #bar { position: fixed; left: 0; right: 0; bottom: 20px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  #msg { color: #aaa; text-align: center; padding: 0 24px; min-height: 2.6em; }
+  button { background: #333; color: #eee; border: 0; border-radius: 20px; padding: 10px 18px; font-size: 15px; }
+  .ok #big { color: #4c8; } .ok .bub { fill: #4c8; }
+  .bub { fill: #fc3; }
+</style>
+</head>
+<body>
+<a id="back" href="./">←</a>
+<div id="hold"></div>
+<svg viewBox="-100 -100 200 200" preserveAspectRatio="xMidYMid meet">
+  <g id="flat">
+    <circle r="80" fill="none" stroke="#555" stroke-width="2"/>
+    <circle r="40" fill="none" stroke="#333" stroke-width="1"/>
+    <path d="M-80 0H80M0 -80V80" stroke="#333" stroke-width="1"/>
+    <circle r="9" fill="none" stroke="#888" stroke-width="1.5"/>
+    <circle id="fb" class="bub" r="9" opacity=".9"/>
+  </g>
+  <g id="vert" display="none">
+    <g id="horizon"><path d="M-400 0H400" stroke="#888" stroke-width="1.5" stroke-dasharray="6 4"/></g>
+    <rect x="-90" y="50" width="180" height="26" rx="13" fill="none" stroke="#555" stroke-width="2"/>
+    <path d="M-9 50V76M9 50V76" stroke="#888" stroke-width="1.5"/>
+    <circle id="vb" class="bub" cy="63" r="10" opacity=".9"/>
+  </g>
+</svg>
+<div id="out"><div id="big">--</div><div id="sub"></div></div>
+<div id="bar"><div id="msg"></div><div><button id="cal">Calibrate</button> <button id="rst" hidden>Reset</button></div></div>
+<script>
+const $ = id => document.getElementById(id);
+const SIGN = typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function' ? -1 : 1; // iOS reports inverted
+const D = 180 / Math.PI, clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+let bias = JSON.parse(localStorage.getItem('bias') || 'null') || { x: 0, y: 0 };
+let sm = null, hold = false, last = null, collect = null, step = 0, first = 0;
+
+// Gravity vector from the accelerometer (devicemotion). Unit "up" vector in device coords after bias removal.
+function up(a) {
+  const x = a.x - bias.x, y = a.y - bias.y, z = a.z, n = Math.hypot(x, y, z) || 1;
+  return { x: x / n, y: y / n, z: z / n };
+}
+
+function render() {
+  const u = up(sm), flat = Math.abs(u.z) > 0.85;
+  let ang, sub;
+  $('flat').setAttribute('display', flat ? '' : 'none');
+  $('vert').setAttribute('display', flat ? 'none' : '');
+  if (flat) {
+    const tx = Math.asin(clamp(u.x, -1, 1)) * D, ty = Math.asin(clamp(u.y, -1, 1)) * D;
+    ang = Math.acos(clamp(Math.abs(u.z), 0, 1)) * D;
+    const k = 72 / Math.sin(10 / D), bx = u.x * k, by = -u.y * k, r = Math.hypot(bx, by), s = r > 72 ? 72 / r : 1;
+    $('fb').setAttribute('cx', bx * s); $('fb').setAttribute('cy', by * s);
+    sub = `X ${tx.toFixed(1)}°  Y ${ty.toFixed(1)}°`;
+  } else {
+    // In-plane rotation of the phone; level = nearest multiple of 90° (portrait or landscape, edge on a surface).
+    const th = Math.atan2(u.x, u.y) * D, off = ((th + 45) % 90 + 90) % 90 - 45;
+    ang = Math.abs(off);
+    $('horizon').setAttribute('transform', `rotate(${off})`);
+    $('vb').setAttribute('cx', clamp(off / 5 * 70, -70, 70));
+    sub = `${off >= 0 ? '+' : ''}${off.toFixed(1)}°`;
+  }
+  sub += `  ·  ${(Math.tan(ang / D) * 1000).toFixed(1)} mm/m`;
+  $('big').textContent = ang.toFixed(1) + '°';
+  $('sub').textContent = sub;
+  document.body.classList.toggle('ok', ang < 0.3);
+}
+
+function onMotion(e) {
+  const g = e.accelerationIncludingGravity;
+  if (!g || g.x == null) return;
+  first = 1;
+  const r = { x: SIGN * g.x, y: SIGN * g.y, z: SIGN * g.z };
+  if (collect) { collect.s.push(r); if (collect.s.length >= 40) collect.done(); }
+  sm = sm ? { x: sm.x + (r.x - sm.x) * .15, y: sm.y + (r.y - sm.y) * .15, z: sm.z + (r.z - sm.z) * .15 } : r;
+  if (!hold) render();
+}
+
+function capture() {
+  return new Promise(res => { collect = { s: [], done() { const s = this.s, m = k => s.reduce((t, v) => t + v[k], 0) / s.length; collect = null; res({ x: m('x'), y: m('y'), z: m('z') }); } }; });
+}
+
+// Two-position calibration: reading A = bias + surface tilt, reading B (turned 180°) = bias - tilt, so bias = (A+B)/2.
+let A = null;
+$('cal').onclick = async () => {
+  if (collect) return;
+  const msg = $('msg'), n = Math.hypot(sm.x, sm.y, sm.z) || 1;
+  if (step === 0) { step = 1; $('cal').textContent = 'Capture 1'; msg.textContent = 'Lay phone flat, screen up, on a hard surface. Keep still, tap Capture 1.'; return; }
+  if (Math.abs(sm.z) / n < 0.95) { msg.textContent = 'Not flat enough. Lay it flat and try again.'; return; }
+  msg.textContent = 'Hold still…';
+  const r = await capture();
+  if (step === 1) { A = r; step = 2; $('cal').textContent = 'Capture 2'; msg.textContent = 'Now turn the phone 180° in the same spot (top to bottom). Tap Capture 2.'; return; }
+  bias = { x: (A.x + r.x) / 2, y: (A.y + r.y) / 2 };
+  localStorage.setItem('bias', JSON.stringify(bias));
+  step = 0; $('cal').textContent = 'Calibrate'; $('rst').hidden = false; msg.textContent = 'Calibrated. Surface tilt is cancelled out.';
+};
+$('rst').hidden = !localStorage.getItem('bias');
+$('rst').onclick = () => { bias = { x: 0, y: 0 }; localStorage.removeItem('bias'); $('rst').hidden = true; $('msg').textContent = 'Calibration cleared.'; };
+document.body.addEventListener('click', e => { if (e.target.closest('button,a')) return; hold = !hold; $('hold').textContent = hold ? 'HOLD' : ''; });
+
+async function start() {
+  try { if (SIGN < 0 && (await DeviceMotionEvent.requestPermission()) !== 'granted') throw 0; } catch (e) { $('msg').textContent = 'Motion access denied.'; return; }
+  addEventListener('devicemotion', onMotion);
+  try { navigator.wakeLock && navigator.wakeLock.request('screen'); } catch (e) {}
+  setTimeout(() => { if (!first) $('msg').textContent = 'No motion sensor data. Open this on a phone over https.'; }, 1500);
+}
+if (SIGN < 0) { $('cal').before(Object.assign(document.createElement('button'), { textContent: 'Start', onclick(e) { e.target.remove(); start(); } })); } else start();
+</script>
+</body>
+</html>
